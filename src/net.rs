@@ -81,10 +81,24 @@ pub async fn submit(client: &KaspaRpcClient, tx: &kaspa_consensus_core::tx::Tran
     Err(anyhow!("submit: {last}"))
 }
 
-/// The node's normal-priority feerate estimate in sompi/gram, or 1.0 when it cannot answer.
-pub async fn feerate(client: &KaspaRpcClient) -> f64 {
-    match client.get_fee_estimate().await {
-        Ok(est) => est.normal_buckets.first().map(|b| b.feerate).unwrap_or(est.priority_bucket.feerate),
-        Err(_) => 1.0,
+/// The node's fee market. The ready mass comes from an experimental call. When that call fails, or
+/// answers without the mass or with a rate that is not a price, the plain estimate gives the rate
+/// and the ready mass stays unknown. When no estimate answers, the rate is zero and the relay floor
+/// is the fee.
+pub async fn market(client: &KaspaRpcClient) -> crate::fees::Market {
+    let normal = |estimate: &kaspa_rpc_core::RpcFeeEstimate| {
+        estimate.normal_buckets.first().map_or(estimate.priority_bucket.feerate, |bucket| bucket.feerate)
+    };
+    let verbose = client.get_fee_estimate_experimental(true).await.ok().and_then(|answer| {
+        let ready_mass = Some(answer.verbose?.mempool_ready_transactions_total_mass);
+        let feerate = normal(&answer.estimate);
+        (feerate.is_finite() && feerate >= 0.0).then_some(crate::fees::Market { feerate, ready_mass })
+    });
+    match verbose {
+        Some(known) => known,
+        None => match client.get_fee_estimate().await {
+            Ok(estimate) => normal(&estimate).into(),
+            Err(_) => crate::fees::Market::default(),
+        },
     }
 }

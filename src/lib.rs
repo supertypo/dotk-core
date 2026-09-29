@@ -22,9 +22,9 @@ pub use assemble::{
 };
 pub use contracts::{Template, Templates};
 pub use fees::{
-    MassOverrun, assemble_payment_with_auto_fee, assemble_sweep_with_auto_fee, assemble_unfunded_evict_with_auto_fee,
-    assemble_with_auto_fee, assemble_with_cards_and_auto_fee, mass_caps, mass_overrun, minimum_standard_fee, refuse_if_overweight,
-    required_fee,
+    CHANGE_TOO_SMALL, Market, MassOverrun, OVERPAY_CEILING_SOMPI, assemble_payment_with_auto_fee, assemble_sweep_with_auto_fee,
+    assemble_unfunded_evict_with_auto_fee, assemble_with_auto_fee, assemble_with_cards_and_auto_fee, fee_mass, frontier_mass,
+    full_block_headroom, mass_caps, mass_overrun, minimum_standard_fee, refuse_if_overweight, required_fee,
 };
 pub use intents::*;
 pub use names::*;
