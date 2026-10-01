@@ -25,7 +25,7 @@ impl Entry {
     }
 }
 
-/// Sorted and deduplicated. A repeated key would emit a `(k, k)` gap that fails [`partitions`].
+/// Sorted and deduplicated. A repeated key emits a `(k, k)` gap that fails [`partitions`].
 pub fn deed_keys(entries: &[Entry]) -> Vec<[u8; 32]> {
     let mut keys: Vec<[u8; 32]> = entries.iter().map(|e| e.key).collect();
     keys.sort_unstable();

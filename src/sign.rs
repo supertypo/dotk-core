@@ -40,6 +40,24 @@ pub fn schnorr_sign_input(
     Ok(out)
 }
 
+/// ECDSA-signs input `input_index` with `SIGHASH_ALL`, for the `p2pk-ecdsa/v1` schemes: the
+/// 64-byte compact signature ‖ the sighash-type byte. The covenant rebuilds the key from the
+/// deed's state, so the sigscript reveals none.
+pub fn ecdsa_sign_input(tx: &Transaction, entries: &[UtxoEntry], input_index: usize, secret_key: &[u8; 32]) -> Result<[u8; SIG_LEN]> {
+    anyhow::ensure!(entries.len() == tx.inputs.len(), "entries/inputs length mismatch");
+    anyhow::ensure!(input_index < tx.inputs.len(), "no input at {input_index}");
+    let populated = PopulatedTransaction::new(tx, entries.to_vec());
+    let reused = SigHashReusedValuesUnsync::new();
+    let hash = calc_ecdsa_signature_hash(&populated, input_index, SIG_HASH_ALL, &reused);
+    let msg = secp256k1::Message::from_digest_slice(hash.as_bytes().as_slice()).map_err(|e| anyhow!("sighash message: {e}"))?;
+    let key = secp256k1::SecretKey::from_slice(secret_key).map_err(|e| anyhow!("secret key: {e}"))?;
+    let sig = secp256k1::SECP256K1.sign_ecdsa(&msg, &key);
+    let mut out = [0u8; SIG_LEN];
+    out[..64].copy_from_slice(&sig.serialize_compact());
+    out[64] = SIG_HASH_ALL.to_u8();
+    Ok(out)
+}
+
 /// The SEC1 compressed public key. A `p2pk-ecdsa/v1` owner must come from
 /// [`crate::address::owner_of`], because a parity paired with x by hand can name the negated key.
 pub fn compressed_public_key(secret_key: &[u8; 32]) -> Result<[u8; 33]> {
@@ -96,8 +114,8 @@ pub fn extract_sig_from_sig_script(sig_script: &[u8]) -> Result<[u8; SIG_LEN]> {
 }
 
 /// A wallet's signature for one input, or why it cannot be used. Only `SIGHASH_ALL` commits to every
-/// output, and neither consensus nor the mempool refuses another type, so the change would be a
-/// bearer value. The zero placeholder is refused, because an unsigning wallet hands it back unchanged.
+/// output, and neither consensus nor the mempool refuses another type, so under any other type the
+/// change is a bearer value. The zero placeholder is refused, because an unsigning wallet hands it back unchanged.
 pub fn accept_wallet_sig(sig_script: &[u8]) -> Result<[u8; SIG_LEN]> {
     let sig = extract_sig_from_sig_script(sig_script)?;
     ensure!(sig != SIG_PLACEHOLDER, "the wallet returned the unsigned placeholder, so it did not sign this input");
@@ -306,5 +324,75 @@ mod tests {
         patch_placeholder_sig(&mut sig_script, &sig).unwrap();
         assert!(!has_placeholder_sig(&sig_script));
         assert_eq!(extract_sig_from_sig_script(&sig_script[33..]).unwrap(), sig);
+    }
+
+    fn one_input_tx() -> (Transaction, Vec<UtxoEntry>) {
+        let spk = ScriptPublicKey::from_vec(0, vec![0x51]);
+        let input =
+            TransactionInput::new(TransactionOutpoint::new(kaspa_consensus_core::Hash::from_bytes([7u8; 32]), 0), vec![], 0, 1);
+        let output = TransactionOutput::new(500, spk.clone());
+        let tx = Transaction::new(1, vec![input], vec![output], 0, SUBNETWORK_ID_NATIVE, 0, vec![]);
+        (tx, vec![UtxoEntry::new(1000, spk, 0, false, None)])
+    }
+
+    /// The ECDSA sighash is the schnorr hash re-hashed under its own domain, and signing the wrong
+    /// one fails only at consensus.
+    #[test]
+    fn ecdsa_signs_the_ecdsa_sighash_flavor() {
+        let (tx, entries) = one_input_tx();
+        let secret = [0x11u8; 32];
+        let sig = ecdsa_sign_input(&tx, &entries, 0, &secret).unwrap();
+        assert_eq!(sig[64], SIG_HASH_ALL.to_u8(), "the sighash type byte completes the 65-byte KCC-1 sig");
+
+        let populated = PopulatedTransaction::new(&tx, entries.clone());
+        let reused = SigHashReusedValuesUnsync::new();
+        let ecdsa_hash = calc_ecdsa_signature_hash(&populated, 0, SIG_HASH_ALL, &reused);
+        assert_ne!(ecdsa_hash, calc_schnorr_signature_hash(&populated, 0, SIG_HASH_ALL, &reused));
+
+        let key = compressed_public_key(&secret).unwrap();
+        assert!(key[0] == 0x02 || key[0] == 0x03, "the revealed key must be the compressed form the covenant hashes");
+        let msg = secp256k1::Message::from_digest_slice(ecdsa_hash.as_bytes().as_slice()).unwrap();
+        let parsed = secp256k1::ecdsa::Signature::from_compact(&sig[..64]).unwrap();
+        let pubkey = secp256k1::PublicKey::from_slice(&key).unwrap();
+        assert!(secp256k1::SECP256K1.verify_ecdsa(&msg, &parsed, &pubkey).is_ok());
+    }
+
+    #[test]
+    fn a_sighash_all_signature_is_accepted() {
+        let mut sig = [7u8; SIG_LEN];
+        sig[SIG_LEN - 1] = SIG_HASH_ALL.to_u8();
+        let script = std::iter::once(0x41u8).chain(sig).collect::<Vec<_>>();
+        assert_eq!(accept_wallet_sig(&script).unwrap(), sig);
+    }
+
+    #[test]
+    fn an_ecdsa_signer_refuses_an_input_that_is_not_there() {
+        let (tx, entries) = one_input_tx();
+        assert!(ecdsa_sign_input(&tx, &entries, 1, &[0x11u8; 32]).unwrap_err().to_string().contains("no input at 1"));
+    }
+
+    /// The flavor follows the UTXO's script, which is what consensus checks against.
+    #[test]
+    fn the_signature_flavor_follows_the_script_it_pays_to() {
+        let secret = [0x35u8; 32];
+        let key = compressed_public_key(&secret).unwrap();
+        let mut script = vec![0x21u8];
+        script.extend(key);
+        script.push(0xab); // OpCheckSigECDSA
+        let spk = ScriptPublicKey::from_vec(0, script);
+        let input = TransactionInput::new_with_compute_budget(
+            TransactionOutpoint::new(kaspa_consensus_core::Hash::from_bytes([9u8; 32]), 0),
+            vec![],
+            0,
+            20,
+        );
+        let tx = Transaction::new(1, vec![input], vec![TransactionOutput::new(500, spk.clone())], 0, SUBNETWORK_ID_NATIVE, 0, vec![]);
+        let entries = vec![UtxoEntry::new(1000, spk, 0, false, None)];
+
+        let ecdsa = ecdsa_sign_input(&tx, &entries, 0, &secret).unwrap();
+        verify_input_sig(&tx, &entries, 0, &ecdsa).expect("the ECDSA signature verifies against an ECDSA script");
+
+        let schnorr = schnorr_sign_input(&tx, &entries, 0, &secret).unwrap();
+        assert!(verify_input_sig(&tx, &entries, 0, &schnorr).is_err(), "the schnorr flavor must not pass an ECDSA input");
     }
 }

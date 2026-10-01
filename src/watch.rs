@@ -736,6 +736,15 @@ mod tests {
         (fixture::templates(), fixture::genesis().watch_templates().unwrap())
     }
 
+    /// The genesis outpoint uses camelCase keys, as the rest of the manifest and Kaspa's RPC do.
+    #[test]
+    fn the_genesis_outpoint_is_spelled_as_the_rpc_spells_it() {
+        let mut g = fixture::genesis();
+        g.genesis_binding = Some(GenesisBinding::minted_over_genesis_gap(&fixture::templates(), fixture::outpoint(0x7a)).unwrap());
+        let full = serde_json::to_string(&g).unwrap();
+        assert!(full.contains("\"transactionId\"") && !full.contains("\"transaction_id\""), "{full:.200}");
+    }
+
     /// Arguments are read positionally, so a padded sigscript must be refused by its arity.
     #[test]
     fn every_entrypoint_declares_the_argument_count_the_compiler_pushes() {

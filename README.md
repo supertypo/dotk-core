@@ -8,6 +8,8 @@ library. It reads the registry and builds transactions against it:
 - the decoder that finds registry transactions and classifies them
 - the rules that derive the registry's gaps from its names
 - the intent builders and the transaction assembler, with the fee ceilings that they enforce
+- the pre-flight VM, the classification of a refused submission, and the manifest projections
+  for a web client and for a stateless reader
 
 The crate carries no compiler. A deployment's covenant bytecode arrives in its manifest, and
 `Templates::from_manifest` refuses bytecode that does not hash to the template hashes that the
@@ -21,10 +23,9 @@ takes every transaction, so the fee is exactly the floor. Past one block, the no
 largest of compute, normalized transient and storage mass. The fee is then the node's
 normal-priority feerate on that mass, when that is more than the floor. Where the node does not
 report its ready mempool, the fee is the feerate on the fee mass, when that is more than the floor.
-No fee passes 5 KAS, and
-none is more than `OVERPAY_CEILING_SOMPI` above what its own transaction requires. That excess is
-change too small to keep. Where change cannot pay for its own storage mass, the builder refuses,
-and another coin is the remedy.
+No fee passes 5 KAS, and none is more than `OVERPAY_CEILING_SOMPI` above what its own transaction
+requires. That excess is change too small to keep. Where change cannot pay for its own storage
+mass, the builder refuses, and another coin is the remedy.
 
 ## Build and test
 
@@ -34,9 +35,11 @@ cargo test --all-features
 ```
 
 The `node` feature adds `net`, the wRPC connection to a Kaspa node and its fee market. The
-`test-fixture` feature exposes `TEST_GENESIS`, a generated test deployment, for the tests of
-crates that build on this one. The crate also builds for `wasm32-unknown-unknown`, with the
-`getrandom` backend flag that `.cargo/config.toml` sets.
+`test-fixture` feature exposes `TEST_GENESIS`, a generated test deployment, and `harness`, which
+assembles transactions from intents, runs them on the script engine, and builds gap and deed
+fixtures and adversarial signature scripts. Both are for the tests of crates that build on this
+one. The crate also builds for `wasm32-unknown-unknown`, with the `getrandom` backend flag that
+`.cargo/config.toml` sets.
 
 ## License
 

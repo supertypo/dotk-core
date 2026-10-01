@@ -1,6 +1,6 @@
 [package]
 name = "dotk-core"
-version = "0.1.1"
+version = "0.11.0"
 edition = "2024"
 license = "MIT"
 description = "The dotk.name protocol: names, state codecs, cards, the registry decoder and the transaction builders"
@@ -17,6 +17,7 @@ kaspa-txscript = { git = "https://github.com/kaspanet/rusty-kaspa", rev = "a41a3
 kaspa-addresses = { git = "https://github.com/kaspanet/rusty-kaspa", rev = "a41a333b08848f41bf737b72592e463a6011b8ac" }
 kaspa-wrpc-client = { git = "https://github.com/kaspanet/rusty-kaspa", rev = "a41a333b08848f41bf737b72592e463a6011b8ac", optional = true }
 kaspa-rpc-core = { git = "https://github.com/kaspanet/rusty-kaspa", rev = "a41a333b08848f41bf737b72592e463a6011b8ac", optional = true }
+kaspa-txscript-errors = { git = "https://github.com/kaspanet/rusty-kaspa", rev = "a41a333b08848f41bf737b72592e463a6011b8ac" }
 workflow-core = { version = "0.18.0", optional = true }
 silverscript-abi = { git = "https://github.com/kaspanet/silverscript", tag = "v1.0.0" }
 blake2b_simd = "1.0.2"
@@ -25,10 +26,11 @@ secp256k1 = { version = "0.29", features = ["global-context", "rand-std"] }
 serde = { version = "1", features = ["derive"] }
 faster-hex = "0.9"
 anyhow = "1"
+serde_json = { version = "1", optional = true }
 
 [features]
-# `TEST_GENESIS`, for the tests of crates that build on this one.
-test-fixture = []
+# `TEST_GENESIS` and `harness`, for the tests of crates that build on this one.
+test-fixture = ["dep:serde_json"]
 node = ["dep:kaspa-wrpc-client", "dep:kaspa-rpc-core", "dep:workflow-core", "dep:ring"]
 
 # wasm32 needs an explicit getrandom backend, and both major versions are in the tree.
@@ -39,3 +41,5 @@ ring = { version = "0.17", features = ["wasm32_unknown_unknown_js"], optional = 
 
 [dev-dependencies]
 serde_json = "1"
+# Pins the mempool wording that `reject` classifies on.
+kaspa-mining-errors = { git = "https://github.com/kaspanet/rusty-kaspa", rev = "a41a333b08848f41bf737b72592e463a6011b8ac" }

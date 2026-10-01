@@ -362,7 +362,7 @@ mod tests {
     }
 
     /// Under congestion the fee ranks at the quoted rate on the mass the node ranks by, and one
-    /// sompi less would rank below it.
+    /// sompi less ranks below it.
     #[test]
     fn a_full_block_pays_the_rate_on_the_frontier_mass_and_no_more() {
         let (intent, funding) = funded_split();

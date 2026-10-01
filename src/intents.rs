@@ -113,8 +113,8 @@ pub(crate) fn sum(parts: &[u64], what: &str) -> Result<u64> {
     parts.iter().try_fold(0u64, |acc, v| acc.checked_add(*v)).ok_or_else(|| anyhow::anyhow!("{what} overflows u64"))
 }
 
-/// A funding signature commits to its own amount only, so an understated covenant input value would
-/// leave the difference to the miner past every fee ceiling.
+/// A funding signature commits to its own amount only, so an understated covenant input value
+/// leaves the difference to the miner past every fee ceiling.
 pub(crate) fn check_value(what: &str, constant: &str, got: u64, pinned: u64) -> Result<(), String> {
     if got == pinned { Ok(()) } else { Err(format!("{what} holds exactly {constant} ({pinned}), this one holds {got}")) }
 }
@@ -484,7 +484,7 @@ mod tests {
     }
 
     /// A funding signature commits to its own amount only, so an understated covenant input
-    /// would hand the difference to the miner past the fee ceiling.
+    /// hands the difference to the miner past the fee ceiling.
     #[test]
     fn an_understated_input_value_is_refused_by_every_builder() {
         let t = fixture::templates();

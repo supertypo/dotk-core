@@ -165,7 +165,7 @@ pub fn validate_label(label: &str) -> Result<(), SubnameFault> {
 
 /// The parent and the optional label a typed input names. With a dot the input must end in
 /// [`DISPLAY_SUFFIX`], stripped once, and the last remaining dot divides the label from the parent.
-/// The suffix segment cannot be a parent, or `alice.k.k` would read as `alice` under `k`.
+/// The suffix segment cannot be a parent, or `alice.k.k` reads as `alice` under `k`.
 pub fn split_subname(input: &str) -> Result<(String, Option<String>), SubnameFault> {
     let s = input.trim().to_ascii_lowercase();
     if !s.contains('.') {

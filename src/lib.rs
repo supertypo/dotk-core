@@ -1,19 +1,25 @@
 //! The dotk.name protocol: names, state codecs, cards, address derivation, registry transaction
-//! decoding, and transaction building and signing.
+//! decoding, transaction building and signing, the manifest projections, the classification of
+//! a refused submission, and the pre-flight VM.
 
 pub mod address;
 pub mod assemble;
 pub mod cards;
 pub mod contracts;
 pub mod fees;
+#[cfg(feature = "test-fixture")]
+pub mod harness;
 pub mod intents;
+pub mod manifests;
 pub mod names;
 #[cfg(feature = "node")]
 pub mod net;
 pub mod params;
 pub mod registry;
+pub mod reject;
 pub mod sign;
 pub mod state;
+pub mod vm;
 pub mod watch;
 
 pub use assemble::{
@@ -29,6 +35,7 @@ pub use fees::{
 pub use intents::*;
 pub use names::*;
 pub use params::Params;
+pub use reject::Rejection;
 pub use state::{DeedState, GapState, OwnerType, Status};
 
 /// A generated test deployment.
