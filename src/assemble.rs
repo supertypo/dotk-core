@@ -95,7 +95,29 @@ pub fn assemble_with_cards(
         intent.kind,
         intent.outputs.len()
     );
-    let assembled = build(intent, cards, funding, change_spk, fee)?;
+    assemble_checked(intent, cards, funding, change_spk, fee, &[])
+}
+
+/// [`assemble`] with a transaction payload. Every sighash covers the payload, so a signer commits to it.
+pub fn assemble_with_payload(
+    intent: &TxIntent,
+    funding: &[FundingUtxo],
+    change_spk: &str,
+    fee: u64,
+    payload: &[u8],
+) -> Result<AssembledTx> {
+    assemble_checked(intent, &CardPlan::default(), funding, change_spk, fee, payload)
+}
+
+fn assemble_checked(
+    intent: &TxIntent,
+    cards: &CardPlan,
+    funding: &[FundingUtxo],
+    change_spk: &str,
+    fee: u64,
+    payload: &[u8],
+) -> Result<AssembledTx> {
+    let assembled = build(intent, cards, funding, change_spk, fee, payload)?;
     // Not in `build`, because `assemble_unfunded_evict` is the one sanctioned waiver.
     ensure!(
         !funding.is_empty() || !cards.sweep.is_empty() || assembled.change.is_none(),
@@ -113,7 +135,7 @@ pub fn assemble_with_cards(
 /// takes a bounty nobody was owed.
 pub fn assemble_unfunded_evict(intent: &TxIntent, payout_spk: &str, fee: u64) -> Result<AssembledTx> {
     ensure!(intent.kind == "evict", "only an evict may be built unfunded, never a {}", intent.kind);
-    build(intent, &CardPlan::default(), &[], payout_spk, fee)
+    build(intent, &CardPlan::default(), &[], payout_spk, fee, &[])
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -221,7 +243,19 @@ fn push_card_input(inputs: &mut Vec<TransactionInput>, entries: &mut Vec<UtxoEnt
     Ok(())
 }
 
-fn build(intent: &TxIntent, cards: &CardPlan, funding: &[FundingUtxo], change_spk: &str, fee: u64) -> Result<AssembledTx> {
+fn build(
+    intent: &TxIntent,
+    cards: &CardPlan,
+    funding: &[FundingUtxo],
+    change_spk: &str,
+    fee: u64,
+    payload: &[u8],
+) -> Result<AssembledTx> {
+    ensure!(
+        cards.mint.is_none() || payload.is_empty(),
+        "a mint writes the payload, so a {} with a card carries no other",
+        intent.kind
+    );
     // In `build`, so the unfunded evict is covered too.
     ensure!(
         fee <= MAX_FEE_SOMPI,
@@ -274,7 +308,7 @@ fn build(intent: &TxIntent, cards: &CardPlan, funding: &[FundingUtxo], change_sp
             covenant: None,
         });
     }
-    let payload = encode_payload(cards.mint.as_ref())?;
+    let payload = if cards.mint.is_some() { encode_payload(cards.mint.as_ref())? } else { payload.to_vec() };
 
     let total_in = total(entries.iter().map(|e| e.amount), "the input values")?;
     let total_out = total(outputs.iter().map(|o| o.value), "the output values")?;
@@ -396,5 +430,23 @@ mod tests {
         let release = release_intent(&t, &pred, &active, &succ, 0).unwrap();
         let why = assemble_with_cards(&release, &plan, &funded, SPK, 100_000).err().unwrap().to_string();
         assert!(why.contains("minted in a transfer"), "{why}");
+    }
+
+    #[test]
+    fn a_payload_rides_into_the_transaction_and_never_beside_a_mint() {
+        let t = fixture::templates();
+        let (_, active, _) = fixture::active(&t, "kaspa");
+        let funded = [coin(0xf0, 10 * 100_000_000)];
+        let transfer = transfer_intent(&t, &active, OwnerType::Pubkey, &owner(6), 0).unwrap();
+        let payload = b"terms".to_vec();
+        let asm = assemble_with_payload(&transfer, &funded, SPK, 100_000, &payload).unwrap();
+        assert_eq!(asm.tx.payload, payload);
+        assert!(assemble(&transfer, &funded, SPK, 100_000).unwrap().tx.payload.is_empty());
+
+        let next = crate::state::DeedState { owner: owner(6), ..active.state };
+        let mint = crate::cards::CardMint::for_deed(&next, vec![0xa0], OwnerType::Pubkey, owner(6)).unwrap();
+        let plan = CardPlan { mint: Some(mint), sweep: vec![] };
+        let why = build(&transfer, &plan, &funded, SPK, 100_000, &payload).err().unwrap().to_string();
+        assert!(why.contains("a mint writes the payload"), "{why}");
     }
 }

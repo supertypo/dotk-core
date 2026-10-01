@@ -9,7 +9,7 @@ use kaspa_consensus_core::tx::{PopulatedTransaction, Transaction, UtxoEntry};
 
 use crate::assemble::{
     Amount, AssembledTx, DUST_SOMPI, FundingUtxo, INSUFFICIENT_FUNDING, MASS_CEILING, MAX_FEE_SOMPI, assemble, assemble_payment,
-    assemble_sweep, assemble_unfunded_evict, assemble_with_cards,
+    assemble_sweep, assemble_unfunded_evict, assemble_with_cards, assemble_with_payload,
 };
 use crate::cards::{CardInput, CardPlan};
 use crate::intents::TxIntent;
@@ -160,6 +160,17 @@ pub fn assemble_with_auto_fee(
     market: impl Into<Market>,
 ) -> Result<AssembledTx> {
     converge(network, market.into(), |fee| assemble(intent, funding, change_spk, fee))
+}
+
+pub fn assemble_with_payload_and_auto_fee(
+    intent: &TxIntent,
+    funding: &[FundingUtxo],
+    change_spk: &str,
+    payload: &[u8],
+    network: &str,
+    market: impl Into<Market>,
+) -> Result<AssembledTx> {
+    converge(network, market.into(), |fee| assemble_with_payload(intent, funding, change_spk, fee, payload))
 }
 
 pub fn assemble_with_cards_and_auto_fee(
