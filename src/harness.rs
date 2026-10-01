@@ -3,6 +3,8 @@
 //! builder's refusal. Every function panics on a malformed argument.
 
 use kaspa_consensus_core::Hash;
+use kaspa_consensus_core::hashing::sighash::{SigHashReusedValuesUnsync, calc_ecdsa_signature_hash, calc_schnorr_signature_hash};
+use kaspa_consensus_core::hashing::sighash_type::SigHashType;
 use kaspa_consensus_core::subnets::SUBNETWORK_ID_NATIVE;
 use kaspa_consensus_core::tx::{
     CovenantBinding, PopulatedTransaction, ScriptPublicKey, Transaction, TransactionInput, TransactionOutput, UtxoEntry,
@@ -185,6 +187,19 @@ pub fn tx_from_intent_with(
         .collect();
 
     (Transaction::new(1, inputs, outputs, 0, SUBNETWORK_ID_NATIVE, 0, vec![]), entries)
+}
+
+/// [`tx_from_intent_with`] with a payload. Every sighash covers the payload.
+pub fn tx_from_intent_with_payload(
+    intent: &TxIntent,
+    leading: &[PlainInput],
+    trailing: &[PlainInput],
+    payload: &[u8],
+) -> (Transaction, Vec<UtxoEntry>) {
+    let (tx, entries) = tx_from_intent_with(intent, &[], leading, trailing);
+    let with_payload =
+        Transaction::new(tx.version, tx.inputs.clone(), tx.outputs.clone(), tx.lock_time, tx.subnetwork_id, tx.gas, payload.to_vec());
+    (with_payload, entries)
 }
 
 /// Execute one input of a finished transaction, with covenants enabled. Panics when `entries`
@@ -544,6 +559,74 @@ pub fn deed_sig_scripts(t: &Templates, deed: &DeedState) -> Vec<(Entrypoint, Vec
     ]
 }
 
+// ---- signing under any sighash type ----------------------------------------------------------
+//
+// The builders in `sign` emit `SIGHASH_ALL` alone, so every other type is made here, on a
+// finished transaction, because an adversarial shape is rewritten between assembly and signature.
+
+/// One signature over `idx` under `ty`, schnorr or ECDSA as `scheme` says.
+pub fn sign_input_with_type(
+    tx: &Transaction,
+    entries: &[UtxoEntry],
+    idx: usize,
+    secret: &[u8; 32],
+    scheme: OwnerType,
+    ty: SigHashType,
+) -> [u8; 65] {
+    let populated = PopulatedTransaction::new(tx, entries.to_vec());
+    let reused = SigHashReusedValuesUnsync::new();
+    let mut out = [0u8; 65];
+    match scheme {
+        OwnerType::P2pkEcdsaEven | OwnerType::P2pkEcdsaOdd => {
+            let hash = calc_ecdsa_signature_hash(&populated, idx, ty, &reused);
+            let msg = secp256k1::Message::from_digest_slice(hash.as_bytes().as_slice()).unwrap();
+            let key = secp256k1::SecretKey::from_slice(secret).unwrap();
+            out[..64].copy_from_slice(&secp256k1::SECP256K1.sign_ecdsa(&msg, &key).serialize_compact());
+        }
+        _ => {
+            let hash = calc_schnorr_signature_hash(&populated, idx, ty, &reused);
+            let msg = secp256k1::Message::from_digest_slice(hash.as_bytes().as_slice()).unwrap();
+            let kp = secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, secret).unwrap();
+            out[..64].copy_from_slice(kp.sign_schnorr(msg).as_ref());
+        }
+    }
+    out[64] = ty.to_u8();
+    out
+}
+
+/// Sign a covenant seat under `ty` and patch its placeholder in place.
+pub fn sign_seat_on_tx(
+    tx: &mut Transaction,
+    entries: &[UtxoEntry],
+    idx: usize,
+    secret: &[u8; 32],
+    scheme: OwnerType,
+    ty: SigHashType,
+) {
+    let sig = sign_input_with_type(tx, entries, idx, secret, scheme, ty);
+    let mut bytes = tx.inputs[idx].signature_script.clone();
+    sign::patch_placeholder_sig(&mut bytes, &sig).unwrap();
+    tx.inputs[idx].signature_script = bytes;
+}
+
+/// Sign a P2PK coin under `ty`, writing the whole signature script, schnorr or ECDSA as `scheme` says.
+pub fn sign_coin_on_tx_as(
+    tx: &mut Transaction,
+    entries: &[UtxoEntry],
+    idx: usize,
+    secret: &[u8; 32],
+    scheme: OwnerType,
+    ty: SigHashType,
+) {
+    let sig = sign_input_with_type(tx, entries, idx, secret, scheme, ty);
+    tx.inputs[idx].signature_script = [&[0x41u8][..], &sig].concat();
+}
+
+/// [`sign_coin_on_tx_as`] for a schnorr coin.
+pub fn sign_coin_on_tx(tx: &mut Transaction, entries: &[UtxoEntry], idx: usize, secret: &[u8; 32], ty: SigHashType) {
+    sign_coin_on_tx_as(tx, entries, idx, secret, OwnerType::Pubkey, ty);
+}
+
 // ---- measurement ---------------------------------------------------------------------------
 
 /// Serialized size, non-contextual masses and relay-fee floor of a finished transaction, as a
@@ -556,9 +639,21 @@ pub fn measure_tx(network: &str, tx: &Transaction) -> (u64, kaspa_consensus_core
     (transaction_estimated_serialized_size(tx), masses, minimum_standard_fee(network, tx).expect("the relay minimum"))
 }
 
+/// The storage mass of a finished transaction, which depends on every input's value.
+pub fn storage_mass(network: &str, tx: &Transaction, entries: &[UtxoEntry]) -> u64 {
+    use kaspa_consensus_core::config::params::Params as ConsensusParams;
+    use kaspa_consensus_core::mass::MassCalculator;
+    let consensus = ConsensusParams::from(fees::network_id(network).expect("a known network"));
+    MassCalculator::new_with_consensus_params(&consensus)
+        .calc_contextual_masses(&PopulatedTransaction::new(tx, entries.to_vec()))
+        .expect("a transaction whose inputs are known has a storage mass")
+        .storage_mass
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kaspa_consensus_core::hashing::sighash_type::{SIG_HASH_ALL, SIG_HASH_NONE};
 
     /// A broken fixture or assembly fails here before a dependent crate meets it.
     #[test]
@@ -568,5 +663,31 @@ mod tests {
         run(&activate_shape(t, &deed, "kaspa", &owner_a(), t.params.fee_5plus), &[]).expect("the honest activate executes");
         run(&activate_shape(t, &deed, "kaspa", &owner_a(), t.params.fee_5plus - 1), &[])
             .expect_err("an underpaid activate is refused");
+    }
+
+    /// The signers write what the engine checks, under both schemes, and the type byte is the
+    /// one the engine reads.
+    #[test]
+    fn the_signers_satisfy_the_engine_under_either_scheme() {
+        let t = test_templates();
+        for secret in [KEY_A, KEY_B] {
+            let (scheme, key) = ecdsa_owner_of(&secret);
+            for (owner_scheme, owner) in [(OwnerType::Pubkey, owner_pub(&secret)), (scheme, key)] {
+                let deed = owned_deed(t, "kaspa", owner_scheme, &owner);
+                let intent = transfer_shape(t, &deed, OwnerType::Pubkey as u8, &owner_b(), 0);
+                let signed = |ty: SigHashType| {
+                    let (mut tx, entries) = tx_from_intent_with_payload(&intent, &[], &[PlainInput::funding()], b"terms");
+                    sign_seat_on_tx(&mut tx, &entries, 0, &secret, owner_scheme, ty);
+                    tx.finalize();
+                    (tx, entries)
+                };
+                let (tx, entries) = signed(SIG_HASH_ALL);
+                assert_eq!(tx.payload, b"terms");
+                assert!(storage_mass("mainnet", &tx, &entries) > 0);
+                execute(&tx, &entries, 0).expect("the owner's signature under its own scheme");
+                let (tx, entries) = signed(SIG_HASH_NONE);
+                execute(&tx, &entries, 0).expect_err("the deed refuses a NONE signature by its type byte");
+            }
+        }
     }
 }

@@ -162,6 +162,7 @@ pub fn assemble_with_auto_fee(
     converge(network, market.into(), |fee| assemble(intent, funding, change_spk, fee))
 }
 
+/// [`assemble_with_auto_fee`] with a transaction payload, which weighs into the mass the fee pays for.
 pub fn assemble_with_payload_and_auto_fee(
     intent: &TxIntent,
     funding: &[FundingUtxo],

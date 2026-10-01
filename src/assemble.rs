@@ -6,7 +6,7 @@ use kaspa_consensus_core::subnets::SUBNETWORK_ID_NATIVE;
 use kaspa_consensus_core::tx::{CovenantBinding, ScriptPublicKey, Transaction, TransactionInput, TransactionOutput, UtxoEntry};
 use serde::{Deserialize, Serialize};
 
-use crate::cards::{CARD_VALUE, CardInput, CardPlan, encode_payload};
+use crate::cards::{CARD_MAGIC, CARD_VALUE, CardInput, CardPlan, encode_payload};
 use crate::intents::{Outpoint, TxIntent, budgets};
 
 /// Change below this folds into the fee instead of becoming an output.
@@ -95,10 +95,11 @@ pub fn assemble_with_cards(
         intent.kind,
         intent.outputs.len()
     );
-    assemble_checked(intent, cards, funding, change_spk, fee, &[])
+    assemble_with_change_duty(intent, cards, funding, change_spk, fee, &[])
 }
 
-/// [`assemble`] with a transaction payload. Every sighash covers the payload, so a signer commits to it.
+/// [`assemble`] with a transaction payload. Every sighash covers the payload, so a signer commits
+/// to it. A payload under the card magic is a card's, and a card is minted through a [`CardPlan`].
 pub fn assemble_with_payload(
     intent: &TxIntent,
     funding: &[FundingUtxo],
@@ -106,10 +107,11 @@ pub fn assemble_with_payload(
     fee: u64,
     payload: &[u8],
 ) -> Result<AssembledTx> {
-    assemble_checked(intent, &CardPlan::default(), funding, change_spk, fee, payload)
+    ensure!(!payload.starts_with(&CARD_MAGIC), "a payload under the card magic is a card, and a card is minted through its plan");
+    assemble_with_change_duty(intent, &CardPlan::default(), funding, change_spk, fee, payload)
 }
 
-fn assemble_checked(
+fn assemble_with_change_duty(
     intent: &TxIntent,
     cards: &CardPlan,
     funding: &[FundingUtxo],
@@ -308,7 +310,10 @@ fn build(
             covenant: None,
         });
     }
-    let payload = if cards.mint.is_some() { encode_payload(cards.mint.as_ref())? } else { payload.to_vec() };
+    let payload = match &cards.mint {
+        Some(mint) => encode_payload(Some(mint))?,
+        None => payload.to_vec(),
+    };
 
     let total_in = total(entries.iter().map(|e| e.amount), "the input values")?;
     let total_out = total(outputs.iter().map(|o| o.value), "the output values")?;
@@ -448,5 +453,8 @@ mod tests {
         let plan = CardPlan { mint: Some(mint), sweep: vec![] };
         let why = build(&transfer, &plan, &funded, SPK, 100_000, &payload).err().unwrap().to_string();
         assert!(why.contains("a mint writes the payload"), "{why}");
+        let card_shaped = [&CARD_MAGIC[..], b"rest"].concat();
+        let why = assemble_with_payload(&transfer, &funded, SPK, 100_000, &card_shaped).err().unwrap().to_string();
+        assert!(why.contains("under the card magic"), "{why}");
     }
 }
