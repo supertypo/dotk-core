@@ -19,8 +19,8 @@ pub(crate) fn execute_input(
     let reused = SigHashReusedValuesUnsync::new();
     let sig_cache = Cache::new(10_000);
     let input = &populated.tx.inputs[input_index];
-    // The input's compute budget limits its script units, as consensus limits them. The default
-    // sigop cost is the 1000 grams that every network's params set.
+    // The input's compute budget limits its script units, as in consensus. The default sigop cost
+    // is the 1000 grams that every network's params set.
     let mut vm = TxScriptEngine::from_transaction_input_with_script_units_limit(
         populated,
         input,
@@ -96,20 +96,18 @@ mod tests {
         assert!(preflight(&tx, &[], &[0]).unwrap_err().to_string().contains("length mismatch"));
     }
 
-    /// Consensus limits an input's script units by its compute budget, and so does pre-flight. A
-    /// script that the free allowance does not cover fails at budget 0 and passes with a budget.
+    /// Consensus limits an input's script units by its compute budget, and so does pre-flight. The
+    /// engine charges 100 units for each spk byte over 35, so a 135-byte spk costs 10,000 units,
+    /// one more than the free allowance.
     #[test]
     fn the_compute_budget_limits_the_script() {
         use kaspa_txscript::opcodes::codes::OpDrop;
-        let mut script = Vec::new();
-        for _ in 0..500 {
-            script.extend([OpTrue, OpDrop]);
-        }
+        let mut script = [OpTrue, OpDrop].repeat(67);
         script.push(OpTrue);
         let (tx, entries) = one_input_tx_with_budget(script.clone(), 0);
         let why = preflight(&tx, &entries, &[0]).unwrap_err().to_string();
-        assert!(why.contains("ExceededCommittedScriptUnits"), "{why}");
-        let (tx, entries) = one_input_tx_with_budget(script, 100);
+        assert!(why.contains("used: 10000, limit: 9999"), "{why}");
+        let (tx, entries) = one_input_tx_with_budget(script, 1);
         preflight(&tx, &entries, &[0]).expect("a budget that covers the script");
     }
 }
