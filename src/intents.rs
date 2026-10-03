@@ -8,8 +8,8 @@ use crate::names::{self, SubnameFault};
 use crate::params::Params;
 use crate::state::{DeedState, GapState, OwnerType, Status};
 
-/// Per-input compute budgets in units of 10,000 script units. Every entrypoint fits the engine's free
-/// allowance, so these are a reserve against repricing.
+/// Per-input compute budgets in units of 10,000 script units. Each one is several times the minimum
+/// that its entrypoint measures, as a reserve against repricing.
 pub mod budgets {
     pub const SPLIT: u16 = 150;
     pub const MERGE: u16 = 150;

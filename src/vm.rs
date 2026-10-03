@@ -18,13 +18,17 @@ pub(crate) fn execute_input(
 ) -> Result<(), TxScriptError> {
     let reused = SigHashReusedValuesUnsync::new();
     let sig_cache = Cache::new(10_000);
-    let mut vm = TxScriptEngine::from_transaction_input(
+    let input = &populated.tx.inputs[input_index];
+    // The input's compute budget limits its script units, as consensus limits them. The default
+    // sigop cost is the 1000 grams that every network's params set.
+    let mut vm = TxScriptEngine::from_transaction_input_with_script_units_limit(
         populated,
-        &populated.tx.inputs[input_index],
+        input,
         input_index,
         &populated.entries[input_index],
         EngineCtx::new(&sig_cache).with_reused(&reused).with_covenants_ctx(cov_ctx),
         EngineFlags { covenants_enabled: true, ..Default::default() },
+        input.compute_commit.allowed_script_units(),
     );
     vm.execute()
 }
@@ -49,9 +53,17 @@ mod tests {
     use kaspa_txscript::opcodes::codes::{OpFalse, OpTrue};
 
     fn one_input_tx(spk: Vec<u8>) -> (Transaction, Vec<UtxoEntry>) {
+        one_input_tx_with_budget(spk, 0)
+    }
+
+    fn one_input_tx_with_budget(spk: Vec<u8>, budget: u16) -> (Transaction, Vec<UtxoEntry>) {
         let spk = ScriptPublicKey::from_vec(0, spk);
-        let input =
-            TransactionInput::new(TransactionOutpoint::new(kaspa_consensus_core::Hash::from_bytes([3u8; 32]), 0), vec![], 0, 1);
+        let input = TransactionInput::new_with_compute_budget(
+            TransactionOutpoint::new(kaspa_consensus_core::Hash::from_bytes([3u8; 32]), 0),
+            vec![],
+            0,
+            budget,
+        );
         let tx = Transaction::new(1, vec![input], vec![TransactionOutput::new(500, spk.clone())], 0, SUBNETWORK_ID_NATIVE, 0, vec![]);
         (tx, vec![UtxoEntry::new(1000, spk, 0, false, None)])
     }
@@ -82,5 +94,22 @@ mod tests {
         let (tx, entries) = one_input_tx(vec![OpTrue]);
         assert!(preflight(&tx, &entries, &[1]).unwrap_err().to_string().contains("no input at 1"));
         assert!(preflight(&tx, &[], &[0]).unwrap_err().to_string().contains("length mismatch"));
+    }
+
+    /// Consensus limits an input's script units by its compute budget, and so does pre-flight. A
+    /// script that the free allowance does not cover fails at budget 0 and passes with a budget.
+    #[test]
+    fn the_compute_budget_limits_the_script() {
+        use kaspa_txscript::opcodes::codes::OpDrop;
+        let mut script = Vec::new();
+        for _ in 0..500 {
+            script.extend([OpTrue, OpDrop]);
+        }
+        script.push(OpTrue);
+        let (tx, entries) = one_input_tx_with_budget(script.clone(), 0);
+        let why = preflight(&tx, &entries, &[0]).unwrap_err().to_string();
+        assert!(why.contains("ExceededCommittedScriptUnits"), "{why}");
+        let (tx, entries) = one_input_tx_with_budget(script, 100);
+        preflight(&tx, &entries, &[0]).expect("a budget that covers the script");
     }
 }
